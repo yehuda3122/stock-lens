@@ -15,15 +15,20 @@ def quote(ticker: str) -> dict:
     out = {"price": None, "beta": None, "market_cap": None, "currency": None,
            "trailing_pe": None, "ev_to_ebitda": None, "ev_to_revenue": None,
            "price_to_book": None, "sector": None, "industry": None,
-           "industry_key": None, "sector_key": None, "name": None}
+           "industry_key": None, "sector_key": None, "name": None, "shares_outstanding": None,
+           "quote_type": None, "financial_currency": None}
     try:
         import yfinance as yf
         t = yf.Ticker(ticker)
         try:
             fi = t.fast_info
-            out["price"] = float(fi["last_price"])
-            out["market_cap"] = float(fi["market_cap"])
-            out["currency"] = fi["currency"]
+            for k_out, k_fi in (("price", "last_price"), ("market_cap", "market_cap"), ("currency", "currency")):
+                try:
+                    v = fi[k_fi]
+                    if v is not None:
+                        out[k_out] = v if k_out == "currency" else float(v)
+                except Exception:
+                    pass
         except Exception:
             pass
         try:
@@ -40,7 +45,11 @@ def quote(ticker: str) -> dict:
                 "industry_key": info.get("industryKey"),
                 "sector_key": info.get("sectorKey"),
                 "name": info.get("shortName") or info.get("longName"),
+                "shares_outstanding": info.get("sharesOutstanding"),   # ADR-equivalent for ADRs
+                "quote_type": info.get("quoteType"),
+                "financial_currency": info.get("financialCurrency"),
             })
+            out["market_cap"] = out["market_cap"] or info.get("marketCap")
         except Exception:
             pass
     except ImportError:
@@ -50,6 +59,47 @@ def quote(ticker: str) -> dict:
     if out["price"]:
         cache.put(f"yf:quote:{ticker}", out)
     return out
+
+
+def fx_rate(currency: str) -> float | None:
+    """USD per 1 unit of `currency` (e.g. TWD -> ~0.03). Yahoo first, open.er-api.com as fallback. Cached 12 h."""
+    currency = currency.upper()
+    if currency == "USD":
+        return 1.0
+    hit = cache.get(f"fx:{currency}", ttl_hours=12)
+    if hit:
+        return hit
+    rate = None
+    try:
+        import yfinance as yf
+        rate = float(yf.Ticker(f"{currency}USD=X").fast_info["last_price"])
+    except Exception:
+        rate = None
+    if not rate:
+        try:
+            import requests
+            j = requests.get(f"https://open.er-api.com/v6/latest/{currency}", timeout=10).json()
+            rate = float(j["rates"]["USD"])
+        except Exception:
+            rate = None
+    return cache.put(f"fx:{currency}", rate) if rate else None
+
+
+def search(query: str, n: int = 8) -> list[dict]:
+    """Yahoo Finance symbol search: [{symbol, name, type, exchange}] — finds brands ('google'), partial names, ETFs."""
+    key = f"yf:search:{query.lower()}"
+    hit = cache.get(key, ttl_hours=24 * 7)
+    if hit is not None:
+        return hit
+    out = []
+    try:
+        import yfinance as yf
+        for q in yf.Search(query, max_results=n, news_count=0).quotes or []:
+            out.append({"symbol": q.get("symbol"), "name": q.get("shortname") or q.get("longname"),
+                        "type": q.get("quoteType"), "exchange": q.get("exchange")})
+    except Exception:
+        return []
+    return cache.put(key, out)
 
 
 def stooq_price(ticker: str) -> float | None:

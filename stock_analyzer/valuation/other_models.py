@@ -37,9 +37,14 @@ def graham_number(fin: Financials, a: Assumptions) -> dict | None:
     return {"eps": float(eps), "bvps": float(bvps), "per_share": math.sqrt(22.5 * eps * bvps)}
 
 
-def _pct(vals, q):
-    vals = [v for v in vals if v is not None and not (isinstance(v, float) and np.isnan(v)) and v > 0]
-    return float(np.percentile(vals, q)) if vals else None
+# Multiples outside these ranges are noise (near-zero earnings, hyper-growth names) and would wreck the median
+MULTIPLE_CAPS = {"pe": 80, "ev_ebitda": 50, "ev_revenue": 25, "pb": 30}
+
+
+def _pct(vals, q, cap=None):
+    vals = [v for v in vals if v is not None and not (isinstance(v, float) and np.isnan(v)) and v > 0
+            and (cap is None or v <= cap)]
+    return float(np.percentile(vals, q)) if len(vals) >= 2 else None
 
 
 def multiples(fin: Financials, a: Assumptions, peers: list[dict]) -> dict | None:
@@ -65,7 +70,7 @@ def multiples(fin: Financials, a: Assumptions, peers: list[dict]) -> dict | None
         if metric is None or np.isnan(metric) or metric <= 0:
             continue
         vals = [p.get(key) for p in peers]
-        q = {name: _pct(vals, pct) for name, pct in [("low", 25), ("base", 50), ("high", 75)]}
+        q = {name: _pct(vals, pct, MULTIPLE_CAPS.get(key)) for name, pct in [("low", 25), ("base", 50), ("high", 75)]}
         if q["base"] is None:
             continue
         implied[key] = {"peer_multiple": q["base"], **{k: conv(v, metric) for k, v in q.items()}}

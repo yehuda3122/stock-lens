@@ -81,6 +81,14 @@ def run(fin: Financials, a: Assumptions, price: float | None, peers: list[dict] 
 
     available = {name for name, obj in [("DCF", dcf_res), ("EPV (no growth)", e),
                                         ("Peer multiples", m), ("Residual income", ri)] if obj}
+    def _base(name):
+        return {"DCF": (dcf_res.get("base") or {}).get("per_share") if dcf_res else None,
+                "EPV (no growth)": (e or {}).get("per_share"), "Peer multiples": (m or {}).get("base"),
+                "Residual income": (ri or {}).get("base")}.get(name)
+    dropped = [n for n in available if (_base(n) or 0) <= 0]
+    if dropped and len(dropped) < len(available):
+        warnings.append("מודלים עם שווי שלילי הוצאו מהשקלול: " + ", ".join(dropped) + ".")
+        available -= set(dropped)
     w = _weights(fin, a, available)
 
     def pick(name, scen):
@@ -94,6 +102,19 @@ def run(fin: Financials, a: Assumptions, price: float | None, peers: list[dict] 
             return ri[scen]
 
     fair = {s: (sum(w[k] * pick(k, s) for k in w) if w else None) for s in ("low", "base", "high")}
+    if fair["base"] is not None and fair["base"] <= 0:
+        warnings.append("השווי המחושב שלילי — החברה שורפת מזומנים או ממונפת מאוד, ומודלי השווי לא משמעותיים כאן. "
+                        "כדאי להסתמך על בדיקת הדוחות והחדשות.")
+        fair = {s: None for s in fair}
+    try:
+        from datetime import date
+        last_end = date.fromisoformat(str(fin.annual["period_end"].iloc[-1]))
+        months = (date.today() - last_end).days / 30.4
+        if months > 16:
+            warnings.append(f"הדוח השנתי האחרון שיש ב-SEC הוא לשנה שהסתיימה ב-{last_end:%m/%Y} (לפני כ-{months:.0f} חודשים) — "
+                            "הנתונים הכספיים לא עדכניים. אצל חברות זרות זה קורה כשהדוח האחרון לא תויג ב-XBRL.")
+    except Exception:
+        pass
     mos = (fair["base"] / price - 1) if (price and fair["base"]) else None
     if not peers:
         warnings.append("No peers entered — add 3-6 comparable companies to include multiples.")

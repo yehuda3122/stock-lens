@@ -16,8 +16,9 @@ user = current_user()
 # ---------------------------------------------------------------- search bar
 with st.container():
     c1, c2, c3 = st.columns([5, 1.2, 1.2], vertical_alignment="bottom")
-    query = c1.text_input("סימול או שם חברה", value=st.session_state.get("query", ""), placeholder="למשל AAPL, MSFT, Nvidia",
-                          help="מניות הנסחרות בארה\"ב (מדווחות ל-SEC)")
+    query = c1.text_input("סימול או שם חברה", value=st.session_state.get("query", ""), placeholder="למשל AAPL, Nvidia, גוגל, BRK.B",
+                          help="סימול, שם חברה או שם מותג (גם בעברית לחברות מוכרות). חברות שמדווחות ל-SEC — "
+                               "אמריקאיות וגם זרות שנסחרות בארה\"ב (ADR). לא קרנות סל.")
     go = c2.button("🔎 נתח", type="primary", width="stretch")
     with c3.popover("אפשרויות", width="stretch"):
         peers_txt = st.text_input("מתחרות להשוואה", value=st.session_state.get("peers_txt", ""), placeholder="ריק = אוטומטי",
@@ -142,6 +143,9 @@ if diff_lines and len(diff_lines) > 1:
         st.markdown("**🕓 " + diff_lines[0] + "**\n" + "\n".join(f"- {x}" for x in diff_lines[1:]))
 elif diff_lines:
     st.caption("🕓 " + diff_lines[0])
+for w in b.val.warnings:   # the important ones go on top, not hidden in the expander
+    if "לא עדכניים" in w or "שלילי —" in w:
+        st.warning(w)
 if b.val.warnings:
     with st.expander(f"⚠️ הערות למודלים ({len(b.val.warnings)})"):
         for w in b.val.warnings:

@@ -75,6 +75,8 @@ def load_inputs(query: str, *, demo: str = "off", peers_override: list[str] | No
         fin = build_financials(facts, c["ticker"], name=c["name"], info=info)
         fin.cik = c["cik"]
         quote = market.quote(c["ticker"])
+        from .financials import apply_market_shares
+        apply_market_shares(fin, quote)
         if peers_override:
             tickers, method, group = [t.upper() for t in peers_override], "manual", None
         else:

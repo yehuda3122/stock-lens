@@ -87,7 +87,7 @@ def test_full_run_with_peers(fin):
 def test_financial_company_uses_residual_income():
     fin = build_financials(make_facts(), "BANK", info={"sic": 6021})
     a = derive(fin, {"beta": 1.0, "price": 50})
-    r = run(fin, a, 50, [{"ticker": "X", "pe": 12, "pb": 1.3}])
+    r = run(fin, a, 50, [{"ticker": "X", "pe": 12, "pb": 1.3}, {"ticker": "Y", "pe": 14, "pb": 1.6}])
     assert not r.dcf and r.residual_income
     assert set(r.weights) == {"Residual income", "Peer multiples"}
     assert any("Financial company" in w for w in r.warnings)

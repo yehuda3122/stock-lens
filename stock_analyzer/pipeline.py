@@ -16,7 +16,10 @@ def load_company(query: str) -> tuple[Financials, dict]:
         info = {}
     fin = build_financials(facts, c["ticker"], name=c["name"], info=info)
     fin.cik = c["cik"]
-    return fin, market.quote(c["ticker"])
+    q = market.quote(c["ticker"])
+    from .financials import apply_market_shares
+    apply_market_shares(fin, q)
+    return fin, q
 
 
 def auto_peers(fin: Financials, quote: dict, n: int = 5) -> PeerResult:

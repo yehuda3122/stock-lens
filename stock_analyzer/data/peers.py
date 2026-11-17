@@ -46,9 +46,12 @@ def _rank_by_size(cands: list[tuple[str, float | None]], target_size: float | No
     """Closest in log-size first; candidates without size go last (in original order)."""
     if not target_size or target_size <= 0:
         return [t for t, _ in cands][:n]
-    sized = [(abs(math.log(s / target_size)), t) for t, s in cands if s and s > 0]
+    sized = sorted((abs(math.log(s / target_size)), t) for t, s in cands if s and s > 0)
     unsized = [t for t, s in cands if not s or s <= 0]
-    return ([t for _, t in sorted(sized)] + unsized)[:n]
+    close = [t for d, t in sized if d <= math.log(30)]          # within 30x in size
+    if len(close) < 3:
+        close = [t for _, t in sized[:3]]
+    return (close + unsized)[:n] if close else unsized[:n]
 
 
 # ---------- Yahoo industry ----------
@@ -63,6 +66,19 @@ def yahoo_industry_candidates(industry_key: str) -> list[str]:
     except Exception:
         syms = []
     return cache.put(f"yf:industry:{industry_key}", syms) if syms else syms
+
+
+def yahoo_sector_candidates(sector_key: str) -> list[str]:
+    hit = cache.get(f"yf:sector:{sector_key}", ttl_hours=24 * 7)
+    if hit is not None:
+        return hit
+    try:
+        import yfinance as yf
+        df = yf.Sector(sector_key).top_companies
+        syms = list(df.index) if df is not None else []
+    except Exception:
+        syms = []
+    return cache.put(f"yf:sector:{sector_key}", syms) if syms else syms
 
 
 # ---------- SEC SIC ----------
@@ -124,7 +140,14 @@ def find_peers(ticker: str, *, cik: int | None = None, sic: int | None = None, s
         cands = _dedupe_by_cik(yahoo_industry_candidates(ikey), cik, tmap)[:max_candidates]
         if cands:
             sized = [(t, market.quote(t).get("market_cap")) for t in cands]
-            chosen = _rank_by_size(sized, quote.get("market_cap"), n)
+            target = quote.get("market_cap")
+            if target and quote.get("sector_key") and not any(
+                    s and s > 0 and abs(math.log(s / target)) <= math.log(30) for _, s in sized):
+                # e.g. Apple: its industry has no company within 30x its size -> borrow sector leaders
+                extra = _dedupe_by_cik(yahoo_sector_candidates(quote["sector_key"]), cik, tmap)
+                extra = [t for t in extra if t not in cands][:10]
+                sized += [(t, market.quote(t).get("market_cap")) for t in extra]
+            chosen = _rank_by_size(sized, target, n)
             if chosen:
                 det = [{"ticker": t, "name": tmap.get(t, {}).get("name"), "market_cap": dict(sized).get(t)} for t in chosen]
                 return PeerResult(chosen, "yahoo-industry", quote.get("industry") or ikey, det)

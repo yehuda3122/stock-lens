@@ -29,24 +29,84 @@ def _get_json(url: str, cache_key: str, ttl_hours: float = 24):
 
 
 def ticker_map() -> dict:
-    """{'AAPL': {'cik': 320193, 'name': 'Apple Inc.'}, ...}"""
-    raw = _get_json("https://www.sec.gov/files/company_tickers.json", "sec:tickers", ttl_hours=24 * 7)
+    """{'AAPL': {'cik': 320193, 'name': 'Apple Inc.'}, ...}  (refreshed daily so new listings appear)"""
+    raw = _get_json("https://www.sec.gov/files/company_tickers.json", "sec:tickers:v2", ttl_hours=24)
     return {v["ticker"].upper(): {"cik": int(v["cik_str"]), "name": v["title"]} for v in raw.values()}
 
 
+# Common Hebrew names -> ticker (Yahoo search doesn't understand Hebrew)
+ALIASES_HE = {
+    "אפל": "AAPL", "מיקרוסופט": "MSFT", "גוגל": "GOOGL", "אלפבית": "GOOGL", "אמזון": "AMZN", "מטא": "META",
+    "פייסבוק": "META", "טסלה": "TSLA", "אנבידיה": "NVDA", "נבידיה": "NVDA", "אינטל": "INTC", "נטפליקס": "NFLX",
+    "טבע": "TEVA", "קוקה קולה": "KO", "קוקה-קולה": "KO", "פפסי": "PEP", "מקדונלדס": "MCD", "סטארבקס": "SBUX",
+    "וולמארט": "WMT", "קוסטקו": "COST", "דיסני": "DIS", "נייקי": "NKE", "בואינג": "BA", "פייזר": "PFE",
+    "ג'ונסון אנד ג'ונסון": "JNJ", "ויזה": "V", "מאסטרקארד": "MA", "פייפאל": "PYPL", "ברקשייר": "BRK-B",
+    "ג'יי פי מורגן": "JPM", "גולדמן זאקס": "GS", "אורקל": "ORCL", "סיילספורס": "CRM", "אדובי": "ADBE",
+    "איי אם די": "AMD", "קוואלקום": "QCOM", "ברודקום": "AVGO", "פלנטיר": "PLTR", "אובר": "UBER",
+    "איירביאנבי": "ABNB", "ספוטיפיי": "SPOT", "שופיפיי": "SHOP", "טיוואן סמיקונדקטור": "TSM", "טי אס אמ סי": "TSM",
+    "נובו נורדיסק": "NVO", "עליבאבא": "BABA", "אליבאבא": "BABA", "ASML": "ASML", "וויקס": "WIX", "מובילאיי": "MBLY",
+    "צ'קפוינט": "CHKP", "צ'ק פוינט": "CHKP", "מאנדיי": "MNDY", "סייברארק": "CYBR", "נייס": "NICE", "אלביט": "ESLT",
+    "אלביט מערכות": "ESLT", "טאואר": "TSEM", "פייבר": "FVRR", "לימונייד": "LMND", "ויסטרה": "VST", "אקסון": "XOM",
+    "שברון": "CVX", "קטרפילר": "CAT", "אבווי": "ABBV", "אלי לילי": "LLY", "מרק": "MRK",
+}
+
+
+class LookupProblem(SecError):
+    """Lookup failed with a message meant for the user (Hebrew)."""
+
+
+def _as_ticker(q: str) -> str:
+    return q.upper().replace(".", "-").replace("/", "-").replace(" ", "")
+
+
+def _name_match(q: str, tm: dict) -> tuple[str, dict] | None:
+    q = q.strip().lower()
+    if len(q) < 2:
+        return None
+    starts = [(t, v) for t, v in tm.items() if v["name"].lower().startswith(q)]
+    contains = [(t, v) for t, v in tm.items() if f" {q}" in f" {v['name'].lower()}"]
+    for group in (starts, contains):
+        if group:
+            group.sort(key=lambda tv: (len(tv[1]["name"]), "-" in tv[0], len(tv[0])))
+            return group[0]
+    return None
+
+
 def resolve(query: str) -> dict:
-    """Accepts a ticker ('MSFT') or part of a company name ('microsoft')."""
-    q = query.strip().upper()
+    """Ticker ('MSFT', '$msft', 'BRK.B'), company name ('coca cola'), brand ('google') or Hebrew name ('אפל')."""
+    q = query.strip().lstrip("$").strip()
+    if not q:
+        raise LookupProblem("לא הוזן סימול או שם חברה.")
     tm = ticker_map()
-    if q in tm:
-        return {"ticker": q, **tm[q]}
-    q_low = query.strip().lower()
-    matches = [(t, v) for t, v in tm.items() if q_low in v["name"].lower()]
-    if not matches:
-        raise SecError(f"No US-listed company found for '{query}'")
-    matches.sort(key=lambda tv: len(tv[1]["name"]))  # shortest name = closest match
-    t, v = matches[0]
-    return {"ticker": t, **v}
+    t = _as_ticker(ALIASES_HE.get(q, q))
+    if t in tm:
+        return {"ticker": t, **tm[t]}
+    m = _name_match(q, tm)
+    if m and len(q) >= 4:
+        return {"ticker": m[0], **m[1]}
+
+    # Yahoo symbol search: brands, partial names, ETFs, non-US listings
+    from . import market
+    hits = market.search(q)
+    for h in hits:
+        sym = _as_ticker(h.get("symbol") or "")
+        if h.get("type") == "EQUITY" and sym in tm:
+            return {"ticker": sym, **tm[sym]}
+    for h in hits:                      # foreign listing (e.g. TSMC.BA) -> find the same company among SEC filers
+        if h.get("type") == "EQUITY" and h.get("name"):
+            words = " ".join(h["name"].split()[:2])
+            mm = _name_match(words, tm)
+            if mm:
+                return {"ticker": mm[0], **mm[1]}
+    if m:
+        return {"ticker": m[0], **m[1]}
+    if hits and hits[0].get("type") in ("ETF", "MUTUALFUND"):
+        raise LookupProblem(f"{hits[0]['symbol']} היא קרן סל / קרן נאמנות ({hits[0].get('name') or ''}). "
+                            "הכלי מנתח חברות בודדות לפי הדוחות הכספיים שלהן, ולקרנות אין דוחות כאלה.")
+    if hits and hits[0].get("type") == "EQUITY":
+        raise LookupProblem(f"נמצאה המניה {hits[0]['symbol']} ({hits[0].get('name') or ''}), אבל היא לא מדווחת ל-SEC "
+                            "(נסחרת רק מחוץ לארה\"ב). הכלי עובד עם חברות שמגישות דוחות ל-SEC.")
+    raise LookupProblem(f"לא מצאתי חברה בשם או בסימול '{query}'. נסה סימול באנגלית (למשל AAPL).")
 
 
 def submissions(cik: int) -> dict:
@@ -78,7 +138,8 @@ def company_facts(cik: int) -> dict:
         return hit
     r = requests.get(f"https://data.sec.gov/api/xbrl/companyfacts/CIK{cik:010d}.json", headers=_HEADERS, timeout=60)
     if r.status_code == 404:
-        raise SecError("No XBRL financial data at SEC for this company (foreign filer or too new).")
+        raise LookupProblem("ל-SEC אין נתונים כספיים מובנים לחברה הזו. זה קורה לקרנות סל וקרנות נאמנות, "
+                            "לחברות שהונפקו לאחרונה ועוד לא הגישו דוח שנתי, ולחלק מהחברות הזרות.")
     r.raise_for_status()
     return cache.put(key, r.json())
 
